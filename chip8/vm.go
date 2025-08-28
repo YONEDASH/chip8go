@@ -310,7 +310,7 @@ func (vm *VM) instr8(op Opcode) error {
 	cmd := op.U4(3)
 
 	valueY := vm.Register.Read(y)
-	if cmd == 0 {
+	if cmd == 0x0 {
 		vm.Register.Write(x, valueY)
 		return nil
 	}
@@ -318,16 +318,16 @@ func (vm *VM) instr8(op Opcode) error {
 
 	var value uint8
 	switch cmd {
-	case 1:
+	case 0x1:
 		// bitwise OR
 		value = valueX | valueY
-	case 2:
+	case 0x2:
 		// bitwise AND
 		value = valueX & valueY
-	case 3:
+	case 0x3:
 		// XOR
 		value = valueX ^ valueY
-	case 4:
+	case 0x4:
 		// Add y to x; sets VF to 1 if overflow, otherwise 0
 		value = valueX + valueY
 		overflowU8 := uint8(0)
@@ -335,7 +335,7 @@ func (vm *VM) instr8(op Opcode) error {
 			overflowU8 = 1
 		}
 		vm.Register.Write(VF, overflowU8)
-	case 5:
+	case 0x5:
 		// Subtract y from x; sets to 0 if underflow, otherwise 1
 		value = valueX - valueY
 		underflowU8 := uint8(0)
@@ -343,13 +343,13 @@ func (vm *VM) instr8(op Opcode) error {
 			underflowU8 = 1
 		}
 		vm.Register.Write(VF, underflowU8)
-	case 6:
+	case 0x6:
 		// Shifts x to the right by 1, stores least significant
 		// bit of x prior to shift into VF
 		leastSignificantBit := valueX & 1
 		value = valueX >> 1
 		vm.Register.Write(VF, leastSignificantBit)
-	case 7:
+	case 0x7:
 		// Subtract x from y; sets to 0 if underflow, otherwise 1
 		value = valueX - valueY
 		underflowU8 := uint8(0)
@@ -357,7 +357,7 @@ func (vm *VM) instr8(op Opcode) error {
 			underflowU8 = 1
 		}
 		vm.Register.Write(VF, underflowU8)
-	case 14:
+	case 0xE:
 		// Shifts x to the left by 1, sets VF to 1 if most
 		// significant bit of x was set or 0 if was unset
 		mostSignificantBit := (valueX >> 7) & 1
@@ -444,5 +444,57 @@ func (vm *VM) instrD(op Opcode) error {
 		}
 	}
 
+	return nil
+}
+
+func (vm *VM) instrE(op Opcode) error {
+	return newUndefinedInstructionErr(op)
+}
+
+func (vm *VM) instrF(op Opcode) error {
+	x := op.U4(1)
+	cmd := op.U8(3)
+	switch cmd {
+	case 0x07:
+		// Sets VX to value of delay timer
+		vm.Register.Write(x, vm.DelayTimer)
+	case 0x0A:
+	// TODO
+	case 0x15:
+		// Sets delay timer to VX
+		vm.DelayTimer = vm.Register.Read(x)
+	case 0x18:
+		// Sets sound timer to VX
+		vm.SoundTimer = vm.Register.Read(x)
+	case 0x1E:
+		// Adds VX to I
+		vm.IndexAddress += Address(vm.Register.Read(x))
+	case 0x29:
+	// Sets I to the location of sprite
+	// TODO
+	case 0x33:
+		// Stores the binary-coded decimal representation of VX, with the hundreds
+		// digit in memory at location in I, the tens digit at location I+1, and the
+		// ones digit at location I+2
+		valueX := vm.Register.Read(x)
+		hundreds := valueX / 100
+		tens := (valueX / 10) % 10
+		ones := valueX % 10
+		vm.Memory[vm.IndexAddress] = hundreds
+		vm.Memory[vm.IndexAddress+1] = tens
+		vm.Memory[vm.IndexAddress+2] = ones
+	case 0x55:
+		// Stores from V0 to VX (including VX) in memory. Starts at address I.
+		for i := range uint4(16) {
+			vm.Memory[vm.IndexAddress+Address(i)] = vm.Register.Read(i)
+		}
+	case 0x65:
+		// Loads V0 to VX from memory. Starts at address I.
+		for i := range uint4(16) {
+			vm.Register.Write(i, vm.Memory[vm.IndexAddress+Address(i)])
+		}
+	default:
+		return newUndefinedInstructionErr(op)
+	}
 	return nil
 }
