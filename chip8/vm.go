@@ -3,14 +3,20 @@ package chip8
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 )
 
 var (
 	ErrUndefinedInstruction = errors.New("Undefined instruction")
+	ErrIllegalMemoryAccess  = errors.New("Illegal memory access")
 )
 
 func newUndefinedInstructionErr(opcode Opcode) error {
 	return errors.Join(ErrUndefinedInstruction, fmt.Errorf("opcode=%x"))
+}
+
+func newIllegalMemoryAccessErr(msg string) error {
+	return errors.Join(ErrIllegalMemoryAccess, errors.New(msg))
 }
 
 type Bool = uint8
@@ -21,7 +27,7 @@ const (
 )
 
 // 0-15
-type uint4 = uint8
+type uint4 uint8
 
 // The CHIP-8 interpreter itself occupies the first 512 bytes of memory.
 // Therefore, most programs written for CHIP-8 do not access memory at
@@ -42,6 +48,10 @@ type Memory [4096]uint8
 // They range from V0 to VF.
 type Register [16]uint8
 
+const (
+	VF = uint4(15)
+)
+
 func (r Register) Read(n uint4) uint8 {
 	return r[int(n)]
 }
@@ -49,8 +59,6 @@ func (r Register) Read(n uint4) uint8 {
 func (r Register) Write(n uint4, v uint8) {
 	r[int(n)] = v
 }
-
-type IndexRegister uint16
 
 type Stack [64]uint8
 
@@ -136,7 +144,7 @@ func (op Opcode) U4(n uint16) uint4 {
 type VM struct {
 	Memory         Memory
 	Register       Register
-	IndexRegister  IndexRegister
+	IndexAddress   Address
 	StackPointer   uint8
 	DelayTimer     uint8
 	SoundTimer     uint8
@@ -163,6 +171,14 @@ func (vm *VM) Tick() (beep bool) {
 	return
 }
 
+func (vm *VM) skipInstr() {
+	vm.IndexAddress++
+}
+
+func (vm *VM) rand() uint8 {
+	return uint8(rand.UintN(255))
+}
+
 func (vm *VM) Instr(op Opcode) error {
 	prefix := (op >> 1) & 0xF
 
@@ -175,6 +191,26 @@ func (vm *VM) Instr(op Opcode) error {
 		return vm.instr2(op)
 	case 3:
 		return vm.instr3(op)
+	case 4:
+		return vm.instr4(op)
+	case 5:
+		return vm.instr5(op)
+	case 6:
+		return vm.instr6(op)
+	case 7:
+		return vm.instr7(op)
+	case 8:
+		return vm.instr8(op)
+	case 9:
+		return vm.instr9(op)
+	case 10:
+		return vm.instrA(op)
+	case 11:
+		return vm.instrB(op)
+	case 12:
+		return vm.instrC(op)
+	case 13:
+		return vm.instrD(op)
 	}
 	return nil
 }
@@ -195,7 +231,7 @@ func (vm *VM) instr0(op Opcode) error {
 // Jump to address
 func (vm *VM) instr1(op Opcode) error {
 	addr := op.U12(1)
-	vm.ProgramCounter = addr
+	vm.IndexAddress = addr
 	return nil
 }
 
@@ -211,7 +247,201 @@ func (vm *VM) instr3(op Opcode) error {
 	nn := op.U8(2)
 
 	if vm.Register.Read(x) == nn {
-		vm.ProgramCounter++
+		vm.skipInstr()
+	}
+
+	return nil
+}
+
+// Skips next instruction if VX not equals NN
+func (vm *VM) instr4(op Opcode) error {
+	x := op.U4(1)
+	nn := op.U8(2)
+
+	if vm.Register.Read(x) != nn {
+		vm.skipInstr()
+	}
+
+	return nil
+}
+
+// Skips next instruction if VX is equals VY
+func (vm *VM) instr5(op Opcode) error {
+	if z := op.U4(3); z != 0 {
+		return newUndefinedInstructionErr(op)
+	}
+
+	x := op.U4(1)
+	y := op.U4(2)
+
+	if vm.Register.Read(x) == vm.Register.Read(y) {
+		vm.skipInstr()
+	}
+
+	return nil
+}
+
+// Sets VX to NN
+func (vm *VM) instr6(op Opcode) error {
+	x := op.U4(1)
+	nn := op.U8(2)
+
+	vm.Register.Write(x, nn)
+
+	return nil
+}
+
+// Adds NN to VX
+func (vm *VM) instr7(op Opcode) error {
+	x := op.U4(1)
+	nn := op.U8(2)
+
+	result := vm.Register.Read(x)
+	result += nn
+	vm.Register.Write(x, result)
+
+	return nil
+}
+
+// Register ops
+func (vm *VM) instr8(op Opcode) error {
+	x := op.U4(1)
+	y := op.U4(2)
+	cmd := op.U4(3)
+
+	valueY := vm.Register.Read(y)
+	if cmd == 0 {
+		vm.Register.Write(x, valueY)
+		return nil
+	}
+	valueX := vm.Register.Read(x)
+
+	var value uint8
+	switch cmd {
+	case 1:
+		// bitwise OR
+		value = valueX | valueY
+	case 2:
+		// bitwise AND
+		value = valueX & valueY
+	case 3:
+		// XOR
+		value = valueX ^ valueY
+	case 4:
+		// Add y to x; sets VF to 1 if overflow, otherwise 0
+		value = valueX + valueY
+		overflowU8 := uint8(0)
+		if value < valueX || value < valueY {
+			overflowU8 = 1
+		}
+		vm.Register.Write(VF, overflowU8)
+	case 5:
+		// Subtract y from x; sets to 0 if underflow, otherwise 1
+		value = valueX - valueY
+		underflowU8 := uint8(0)
+		if valueX >= valueY {
+			underflowU8 = 1
+		}
+		vm.Register.Write(VF, underflowU8)
+	case 6:
+		// Shifts x to the right by 1, stores least significant
+		// bit of x prior to shift into VF
+		leastSignificantBit := valueX & 1
+		value = valueX >> 1
+		vm.Register.Write(VF, leastSignificantBit)
+	case 7:
+		// Subtract x from y; sets to 0 if underflow, otherwise 1
+		value = valueX - valueY
+		underflowU8 := uint8(0)
+		if valueY >= valueX {
+			underflowU8 = 1
+		}
+		vm.Register.Write(VF, underflowU8)
+	case 14:
+		// Shifts x to the left by 1, sets VF to 1 if most
+		// significant bit of x was set or 0 if was unset
+		mostSignificantBit := (valueX >> 7) & 1
+		value = valueX << 1
+		vm.Register.Write(VF, mostSignificantBit)
+	default:
+		return newUndefinedInstructionErr(op)
+	}
+
+	vm.Register.Write(x, value)
+
+	return nil
+}
+
+// Skips next instruction if VX not equals VY
+func (vm *VM) instr9(op Opcode) error {
+	x := op.U4(1)
+	y := op.U4(2)
+	z := op.U4(3)
+
+	if z != 0 {
+		return newUndefinedInstructionErr(op)
+	}
+
+	valueX := vm.Register.Read(x)
+	valueY := vm.Register.Read(y)
+
+	if valueX != valueY {
+		vm.skipInstr()
+	}
+
+	return nil
+}
+
+// Sets I to address NNN
+func (vm *VM) instrA(op Opcode) error {
+	addr := op.U12(1)
+	vm.IndexAddress = addr
+	return nil
+}
+
+// Jumps to address NNN + V0
+func (vm *VM) instrB(op Opcode) error {
+	addr := op.U12(1)
+	v0 := vm.Register.Read(0)
+	vm.ProgramCounter = uint16(addr) + uint16(v0)
+	return nil
+}
+
+// Sets VX to result of bitwise on rand number and NN
+func (vm *VM) instrC(op Opcode) error {
+	x := op.U4(1)
+	nn := op.U8(2)
+	result := vm.rand() & nn
+	vm.Register.Write(x, result)
+	return nil
+}
+
+// Draws a sprite at coordinate VX, VY with 8px width
+// and height of N. If VF is 1, bits will be XORed.
+func (vm *VM) instrD(op Opcode) error {
+	x := op.U4(1)
+	y := op.U4(2)
+	n := op.U4(3)
+	spriteX := vm.Register.Read(x)
+	spriteY := vm.Register.Read(y)
+
+	spriteMemLoc := vm.IndexAddress
+	for range n {
+		for i := range 8 {
+			loc := int(spriteMemLoc+uint16(n)) + i
+			if loc >= 4096 {
+				return newIllegalMemoryAccessErr(fmt.Sprintf("location %d is out of range", loc))
+			}
+			bit := vm.Memory[loc]
+
+			// Check if bits should be XORed
+			if vm.Register.Read(VF) == 1 {
+				v := vm.FrameBuffer.Read(spriteX, spriteY)
+				vm.FrameBuffer.Write(spriteX, spriteY, v^bit)
+			} else {
+				vm.FrameBuffer.Write(spriteX, spriteY, bit)
+			}
+		}
 	}
 
 	return nil
