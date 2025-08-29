@@ -1,9 +1,14 @@
 package chip8
 
 import (
+	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math/rand/v2"
+	"time"
 )
 
 var (
@@ -12,7 +17,7 @@ var (
 )
 
 func newUndefinedInstructionErr(opcode Opcode) error {
-	return errors.Join(ErrUndefinedInstruction, fmt.Errorf("opcode=%x"))
+	return errors.Join(ErrUndefinedInstruction, fmt.Errorf("opcode=%x hex=%s", opcode, hex.EncodeToString(opcode.Dump())))
 }
 
 func newIllegalMemoryAccessErr(msg string) error {
@@ -44,6 +49,10 @@ type uint4 uint8
 // Source: https://en.wikipedia.org/wiki/CHIP-8
 type Memory [4096]uint8
 
+const (
+	StartAddress = 0x200
+)
+
 // The CHIP-8 has 16 8-bit registers.
 // They range from V0 to VF.
 type Register [16]uint8
@@ -69,7 +78,7 @@ type Stack [64]uint8
 type FrameBuffer [256]uint8
 
 // Usually 12-bits by spec, but limited by Go to represent it with 16 bits.
-type Address = uint16
+type uint12 = uint16
 
 func (fb *FrameBuffer) getIndexes(x, y uint8) (arrIdx, bitIdx uint8) {
 	idx := x%64 + y*64
@@ -115,20 +124,22 @@ func (fb *FrameBuffer) Dump(x, y uint8) (d []uint8, arrIdx, bitIdx uint8) {
 
 type Opcode uint16
 
-// Checks whether the n-th 4 bit number of the big
-// endian encoded Opcode op matches v.
-func (op Opcode) matchU4(n, v uint16) bool {
-	u4 := (op >> (n * 4)) & 0xF
-	return uint16(u4) == v
+func (op Opcode) Dump() (d []byte) {
+	d = make([]byte, 4)
+	d[0] = byte(op.U4(0))
+	d[1] = byte(op.U4(1))
+	d[2] = byte(op.U4(2))
+	d[3] = byte(op.U4(3))
+	return
 }
 
-func (op Opcode) matchU16(v uint16) bool {
-	return uint16(op) == v
+func (op Opcode) Prefix() uint4 {
+	return op.U4(0)
 }
 
-func (op Opcode) U12(n uint16) Address {
+func (op Opcode) U12(n uint16) uint12 {
 	u12 := (op >> (n * 4))
-	return Address(u12)
+	return uint12(u12)
 }
 
 func (op Opcode) U8(n uint16) uint8 {
@@ -137,14 +148,14 @@ func (op Opcode) U8(n uint16) uint8 {
 }
 
 func (op Opcode) U4(n uint16) uint4 {
-	u8 := (op >> (n * 4)) & 0xFF
-	return uint4(u8)
+	u4 := (op >> (n * 4)) & 0xF
+	return uint4(u4)
 }
 
 type VM struct {
 	Memory         Memory
 	Register       Register
-	IndexAddress   Address
+	IndexAddress   uint12
 	StackPointer   uint8
 	DelayTimer     uint8
 	SoundTimer     uint8
@@ -153,7 +164,66 @@ type VM struct {
 }
 
 func New() *VM {
-	return &VM{}
+	return &VM{
+		ProgramCounter: StartAddress,
+	}
+}
+
+// Loads ROM into memory.
+func (vm *VM) Load(r io.Reader) error {
+	buf := make([]uint8, 1)
+	i := StartAddress
+	for {
+		n, err := r.Read(buf)
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			return err
+		}
+		if n == 0 {
+			break
+		}
+		if i >= 4096 {
+			return newIllegalMemoryAccessErr("memory limit exceeded")
+		}
+		vm.Memory[i] = buf[0]
+		i++
+	}
+	return nil
+}
+
+func (vm *VM) Start(ctx context.Context, beepCallback func()) error {
+	cpu := time.NewTicker(time.Second / 4) // 700Hz
+	defer cpu.Stop()
+	timer := time.NewTicker(time.Second / 1) // 60Hz
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-cpu.C:
+			if err := vm.Cycle(); err != nil {
+				return err
+			}
+		case <-timer.C:
+			beep := vm.Tick()
+			if beepCallback != nil && beep {
+				beepCallback()
+			}
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+// Executes a CPU cycle by executing the instruction pointed at
+// by the program counter.
+func (vm *VM) Cycle() error {
+	pc := vm.ProgramCounter
+	op := Opcode(vm.Memory[pc])
+	slog.Info("CPU", "PC", pc, "prefix", op.Prefix(), "[0]", op.U4(0), "[1]", op.U4(1), "[2]", op.U4(2), "[3]", op.U4(3), "hex", hex.EncodeToString(op.Dump()))
+	if err := vm.Instr(op); err != nil {
+		return err
+	}
+	vm.ProgramCounter++
+	return nil
 }
 
 // Tick decreases the delay and sound timer by one.
@@ -172,7 +242,7 @@ func (vm *VM) Tick() (beep bool) {
 }
 
 func (vm *VM) skipInstr() {
-	vm.IndexAddress++
+	vm.ProgramCounter++
 }
 
 func (vm *VM) rand() uint8 {
@@ -180,65 +250,72 @@ func (vm *VM) rand() uint8 {
 }
 
 func (vm *VM) Instr(op Opcode) error {
-	prefix := (op >> 1) & 0xF
-
-	switch prefix {
-	case 0:
+	switch op.Prefix() {
+	case 0x0:
 		return vm.instr0(op)
-	case 1:
+	case 0x1:
 		return vm.instr1(op)
-	case 2:
+	case 0x2:
 		return vm.instr2(op)
-	case 3:
+	case 0x3:
 		return vm.instr3(op)
-	case 4:
+	case 0x4:
 		return vm.instr4(op)
-	case 5:
+	case 0x5:
 		return vm.instr5(op)
-	case 6:
+	case 0x6:
 		return vm.instr6(op)
-	case 7:
+	case 0x7:
 		return vm.instr7(op)
-	case 8:
+	case 0x8:
 		return vm.instr8(op)
-	case 9:
+	case 0x9:
 		return vm.instr9(op)
-	case 10:
+	case 0xA:
 		return vm.instrA(op)
-	case 11:
+	case 0xB:
 		return vm.instrB(op)
-	case 12:
+	case 0xC:
 		return vm.instrC(op)
-	case 13:
+	case 0xD:
 		return vm.instrD(op)
-	}
-	return nil
-}
-
-func (vm *VM) instr0(op Opcode) error {
-	switch op {
-	case 0x00E0: // Clear Display
-		vm.FrameBuffer.Clear()
-	// case 0x00EE: // Return
-	// 	vm.Return()
+	case 0xE:
+		return vm.instrE(op)
+	case 0xF:
+		return vm.instrF(op)
 	default:
 		return newUndefinedInstructionErr(op)
 	}
+}
 
+func (vm *VM) instr0(op Opcode) error {
+	if op.U4(2) == 0xE {
+		switch op.U4(3) {
+		case 0x0:
+			// Clear display
+			vm.FrameBuffer.Clear()
+		case 0xE:
+		// Return from sub routine
+		// TODO
+		default:
+			return newUndefinedInstructionErr(op)
+		}
+	}
+	u12 := op.U12(1)
+	slog.Info("CALL MACHINE", "u12", u12)
 	return nil
 }
 
 // Jump to address
 func (vm *VM) instr1(op Opcode) error {
 	addr := op.U12(1)
-	vm.IndexAddress = addr
+	vm.ProgramCounter = addr
 	return nil
 }
 
 // Call subroutine at address
 func (vm *VM) instr2(op Opcode) error {
-
-	return nil
+	return newUndefinedInstructionErr(op)
 }
 
 // Skips next instruction if VX equals NN
@@ -468,7 +545,7 @@ func (vm *VM) instrF(op Opcode) error {
 		vm.SoundTimer = vm.Register.Read(x)
 	case 0x1E:
 		// Adds VX to I
-		vm.IndexAddress += Address(vm.Register.Read(x))
+		vm.IndexAddress += uint12(vm.Register.Read(x))
 	case 0x29:
 	// Sets I to the location of sprite
 	// TODO
@@ -486,12 +563,12 @@ func (vm *VM) instrF(op Opcode) error {
 	case 0x55:
 		// Stores from V0 to VX (including VX) in memory. Starts at address I.
 		for i := range uint4(16) {
-			vm.Memory[vm.IndexAddress+Address(i)] = vm.Register.Read(i)
+			vm.Memory[vm.IndexAddress+uint12(i)] = vm.Register.Read(i)
 		}
 	case 0x65:
 		// Loads V0 to VX from memory. Starts at address I.
 		for i := range uint4(16) {
-			vm.Register.Write(i, vm.Memory[vm.IndexAddress+Address(i)])
+			vm.Register.Write(i, vm.Memory[vm.IndexAddress+uint12(i)])
 		}
 	default:
 		return newUndefinedInstructionErr(op)
