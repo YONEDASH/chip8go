@@ -170,11 +170,14 @@ type VM struct {
 	FrameBuffer    FrameBuffer
 	ProgramCounter uint16
 	Input          InputAdapter
+	Output         OutputAdapter
 }
 
-func New() *VM {
+func New(i InputAdapter, o OutputAdapter) *VM {
 	return &VM{
 		ProgramCounter: AddressProgramStart,
+		Input:          i,
+		Output:         o,
 	}
 }
 
@@ -199,7 +202,7 @@ func (vm *VM) Load(r io.Reader) error {
 	return nil
 }
 
-func (vm *VM) Start(ctx context.Context, beepCallback func()) error {
+func (vm *VM) Start(ctx context.Context) error {
 	cpu := time.NewTicker(time.Second / 4) // 700Hz
 	defer cpu.Stop()
 	timer := time.NewTicker(time.Second / 1) // 60Hz
@@ -213,8 +216,8 @@ func (vm *VM) Start(ctx context.Context, beepCallback func()) error {
 			}
 		case <-timer.C:
 			beep := vm.Tick()
-			if beepCallback != nil && beep {
-				beepCallback()
+			if beep {
+				vm.Output.Beep()
 			}
 		case <-ctx.Done():
 			return nil
@@ -577,15 +580,15 @@ func (vm *VM) instrD(op Opcode) error {
 
 func (vm *VM) instrE(op Opcode) error {
 	x := op.U4(1)
-	cmd := op.U4(2)
+	cmd := op.U8(2)
 	valueX := vm.Register.Read(x)
 
 	switch cmd {
-	case 0x9:
+	case 0x9E:
 		if vm.Input.Pressed(valueX) {
 			vm.skipInstr()
 		}
-	case 0xA:
+	case 0xA1:
 		if !vm.Input.Pressed(valueX) {
 			vm.skipInstr()
 		}

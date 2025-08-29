@@ -7,6 +7,7 @@ type InputAdapter interface {
 	Pressed(k uint8) bool
 }
 
-type DisplayAdapter interface {
-	Draw(FrameBuffer)
+type OutputAdapter interface {
+	Beep()
+	Draw(fb FrameBuffer)
 }
