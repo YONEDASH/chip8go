@@ -50,8 +50,19 @@ type uint4 uint8
 type Memory [4096]uint8
 
 const (
-	StartAddress = 0x200
+	AddressInternalStart = 0x0
+	AddressStackPointer  = AddressInternalStart + 0x0
+	AddressStackStart    = AddressStackPointer + 0x1
+	AddressProgramStart  = 0x200
 )
+
+func (m *Memory) Write(idx uint12, v uint8) {
+	m[idx] = v
+}
+
+func (m *Memory) Read(idx uint16) uint8 {
+	return m[idx]
+}
 
 // The CHIP-8 has 16 8-bit registers.
 // They range from V0 to VF.
@@ -68,8 +79,6 @@ func (r Register) Read(n uint4) uint8 {
 func (r Register) Write(n uint4, v uint8) {
 	r[int(n)] = v
 }
-
-type Stack [64]uint8
 
 // The size of the frame buffer is 64x32.
 // Each pixel can ether be on or off.
@@ -156,23 +165,23 @@ type VM struct {
 	Memory         Memory
 	Register       Register
 	IndexAddress   uint12
-	StackPointer   uint8
 	DelayTimer     uint8
 	SoundTimer     uint8
 	FrameBuffer    FrameBuffer
 	ProgramCounter uint16
+	Input          InputAdapter
 }
 
 func New() *VM {
 	return &VM{
-		ProgramCounter: StartAddress,
+		ProgramCounter: AddressProgramStart,
 	}
 }
 
 // Loads ROM into memory.
 func (vm *VM) Load(r io.Reader) error {
 	buf := make([]uint8, 1)
-	i := StartAddress
+	i := AddressProgramStart
 	for {
 		n, err := r.Read(buf)
 		if errors.Is(err, io.ErrUnexpectedEOF) {
@@ -241,6 +250,38 @@ func (vm *VM) Tick() (beep bool) {
 	return
 }
 
+func (vm *VM) StackSize() uint8 {
+	return vm.Memory[AddressStackPointer]
+}
+
+func (vm *VM) SetStackSize(u8 uint8) {
+	vm.Memory[AddressStackPointer] = u8
+}
+
+func (vm *VM) StackPush(u12 uint12) error {
+	size := vm.StackSize()
+	if size > 12 {
+		return newIllegalMemoryAccessErr("stack overflow")
+	}
+	top := AddressStackStart + int(size)*2
+	vm.Memory[top+1] = uint8(u12)
+	vm.Memory[top+2] = uint8(u12 >> 8)
+	vm.SetStackSize(size + 1)
+	return nil
+}
+
+func (vm *VM) StackPop() (uint12, error) {
+	size := vm.StackSize()
+	if size == 0 {
+		return 0, newIllegalMemoryAccessErr("stack is empty")
+	}
+	top := AddressStackStart + int(size)*2
+	v1 := vm.Memory[top-1]
+	v2 := vm.Memory[top]
+	vm.SetStackSize(size - 1)
+	return uint12(v1) | uint12(v2)<<8, nil
+}
+
 func (vm *VM) skipInstr() {
 	vm.ProgramCounter++
 }
@@ -295,11 +336,16 @@ func (vm *VM) instr0(op Opcode) error {
 			// Clear display
 			vm.FrameBuffer.Clear()
 		case 0xE:
-		// Return from sub routine
-		// TODO
+			// Return from sub routine
+			ptr, err := vm.StackPop()
+			if err != nil {
+				return err
+			}
+			vm.ProgramCounter = ptr
 		default:
 			return newUndefinedInstructionErr(op)
 		}
+		return nil
 	}
 	u12 := op.U12(1)
 	slog.Info("CALL MACHINE", "u12", u12)
@@ -315,7 +361,12 @@ func (vm *VM) instr1(op Opcode) error {
 
 // Call subroutine at address
 func (vm *VM) instr2(op Opcode) error {
-	return newUndefinedInstructionErr(op)
+	addr := op.U12(1)
+	if err := vm.StackPush(vm.ProgramCounter); err != nil {
+		return err
+	}
+	vm.ProgramCounter = addr
+	return nil
 }
 
 // Skips next instruction if VX equals NN
@@ -525,7 +576,24 @@ func (vm *VM) instrD(op Opcode) error {
 }
 
 func (vm *VM) instrE(op Opcode) error {
-	return newUndefinedInstructionErr(op)
+	x := op.U4(1)
+	cmd := op.U4(2)
+	valueX := vm.Register.Read(x)
+
+	switch cmd {
+	case 0x9:
+		if vm.Input.Pressed(valueX) {
+			vm.skipInstr()
+		}
+	case 0xA:
+		if !vm.Input.Pressed(valueX) {
+			vm.skipInstr()
+		}
+	default:
+		return newUndefinedInstructionErr(op)
+	}
+
+	return nil
 }
 
 func (vm *VM) instrF(op Opcode) error {
@@ -536,7 +604,9 @@ func (vm *VM) instrF(op Opcode) error {
 		// Sets VX to value of delay timer
 		vm.Register.Write(x, vm.DelayTimer)
 	case 0x0A:
-	// TODO
+		// Wait for next keyboard input and write it to VX
+		key := vm.Input.Next()
+		vm.Register.Write(x, key)
 	case 0x15:
 		// Sets delay timer to VX
 		vm.DelayTimer = vm.Register.Read(x)

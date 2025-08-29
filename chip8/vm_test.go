@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	. "github.com/yonedash/chip8emu/chip8"
 )
 
@@ -39,4 +40,23 @@ func TestFrameBuffer(t *testing.T) {
 	assertWrite(60, 0, True)
 	assertWrite(0, 1, True)
 	assertWrite(0, 1, False)
+}
+
+func TestStack(t *testing.T) {
+	vm := New()
+
+	for i := range uint16(12) {
+		require.NoError(t, vm.StackPush(i), "stack push")
+	}
+	err := vm.StackPush(42)
+	assert.Error(t, err, "stack overflow")
+
+	for i := range uint16(12) {
+		v, err := vm.StackPop()
+		assert.NoError(t, err, "stack pop")
+		assert.Equal(t, v, 11-i, "stack popped value")
+	}
+
+	_, err = vm.StackPop()
+	assert.Error(t, err, "stack empty")
 }
