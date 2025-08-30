@@ -214,6 +214,7 @@ func (vm *VM) Start(ctx context.Context) error {
 			if err := vm.Cycle(); err != nil {
 				return err
 			}
+			vm.Output.Draw(vm.FrameBuffer)
 		case <-timer.C:
 			beep := vm.Tick()
 			if beep {

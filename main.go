@@ -46,24 +46,42 @@ func main() {
 		panic(err)
 	}
 
-	if err := vm.Start(context.Background()); err != nil {
-		panic(err)
+	go func() {
+		if err := vm.Start(context.Background()); err != nil {
+			panic(err)
+		}
+	}()
+
+	rl.InitWindow(800, 450, "chip8")
+	defer rl.CloseWindow()
+	rl.SetTargetFPS(60)
+
+	for !rl.WindowShouldClose() {
+		rl.BeginDrawing()
+
+		rl.ClearBackground(rl.Black)
+		// rl.DrawText("Congrats! You created your first window!", 190, 200, 20, rl.LightGray)
+
+		px := int32(8)
+		for x := range int32(48) {
+			for y := range int32(32) {
+				if vm.FrameBuffer.Read(uint8(x), uint8(y)) == chip8.True {
+					rl.DrawRectangle(x*px, y*px, x+px, y+px, rl.RayWhite)
+				}
+			}
+		}
+		rl.DrawRectangleLines(0, 0, 48*px, 32*px, rl.Gray)
+
+		rl.EndDrawing()
 	}
+
 }
 
 type Window struct {
+	Buffer chip8.FrameBuffer
 }
 
 func NewWindow() (*Window, func(), error) {
-	rl.InitWindow(800, 450, "chip8")
-	defer rl.CloseWindow()
-
-	rl.SetTargetFPS(60)
-
-	// for !rl.WindowShouldClose() {
-
-	// }
-
 	return &Window{}, func() {}, nil
 }
 
@@ -78,13 +96,8 @@ func (w Window) Pressed(k uint8) bool {
 func (w Window) Beep() {
 }
 
-func (w Window) Draw(fb chip8.FrameBuffer) {
-	rl.BeginDrawing()
-
-	rl.ClearBackground(rl.RayWhite)
-	rl.DrawText("Congrats! You created your first window!", 190, 200, 20, rl.LightGray)
-
-	rl.EndDrawing()
+func (w *Window) Draw(fb chip8.FrameBuffer) {
+	copy(w.Buffer[:], fb[:])
 }
 
 type Terminal struct {
