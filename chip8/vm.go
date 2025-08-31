@@ -155,24 +155,31 @@ func (op Opcode) Hex() string {
 }
 
 func (op Opcode) Prefix() uint4 {
-	return op.U4(0)
+	return uint4(op >> 12 & 0x0F)
 }
 
-func (op Opcode) U12() uint12 {
-	u12 := op & 0xFFF
-	return uint12(u12)
+func (op Opcode) NNN() uint12 {
+	return uint12(op & 0xFFF)
 }
 
-func (op Opcode) U8(n uint16) uint8 {
-	if n == 2 {
-		return uint8(op & 0xFF)
-	}
-	panic("illegal op")
+func (op Opcode) NN() uint8 {
+	return uint8(op & 0xFF)
 }
 
-func (op Opcode) U4(n uint16) uint4 {
-	u4 := (op << ((n - 3) * 4)) & 0xF
-	return uint4(u4)
+func (op Opcode) N() uint4 {
+	return uint4(op & 0x0F)
+}
+
+func (op Opcode) X() uint4 {
+	return uint4(op >> 8 & 0x0F)
+}
+
+func (op Opcode) Y() uint4 {
+	return uint4(op >> 4 & 0x0F)
+}
+
+func (op Opcode) U4(n uint4) uint4 {
+	return uint4(op >> ((3 - n) * 4) & 0x0F)
 }
 
 func (op Opcode) String() string {
@@ -295,7 +302,7 @@ func (vm *VM) Start(ctx context.Context) error {
 }
 
 func (vm *VM) readInstr(pc uint16) Opcode {
-	return Opcode(vm.Memory[pc])>>8 | Opcode(vm.Memory[pc+1])
+	return Opcode(vm.Memory[pc])<<8 | Opcode(vm.Memory[pc+1])
 }
 
 // Executes a CPU cycle by executing the instruction pointed at
@@ -307,13 +314,13 @@ func (vm *VM) Cycle() error {
 	}
 
 	op := vm.readInstr(pc)
-	if false {
+	if true {
 		slog.Info("CPU", "PC", pc, "PCX", fmt.Sprintf("%X", pc), "OP", op.String(), "[0]", op.U4(0), "[1]", op.U4(1), "[2]", op.U4(2), "[3]", op.U4(3), "hex", op.Hex())
 		if err := vm.Instr(op); err != nil {
 			return err
 		}
 	} else {
-		slog.Info("CPU", "PC", pc, "PCX", fmt.Sprintf("%X", pc), "OP", op.String(), "hex", op.Hex(), "U12", fmt.Sprintf("%X", op.U12()))
+		slog.Info("CPU", "PC", pc, "PCX", fmt.Sprintf("%X", pc), "OP", op.String(), "hex", op.Hex(), "U12", fmt.Sprintf("%X", op.NNN()))
 	}
 
 	vm.SkipInstr()
@@ -431,7 +438,7 @@ func (vm *VM) instr0(op Opcode) error {
 		}
 		return nil
 	}
-	u12 := op.U12()
+	u12 := op.NNN()
 	slog.Info("CALL MACHINE", "u12", u12, "dump", op.Dump())
 	return nil
 }
@@ -448,15 +455,15 @@ func (vm *VM) SkipInstr() {
 
 // Jump to address
 func (vm *VM) instr1(op Opcode) error {
-	addr := AddressProgramStart + op.U12()
+	addr := op.NNN()
 	vm.Jump(addr)
 	return nil
 }
 
 // Call subroutine at address
 func (vm *VM) instr2(op Opcode) error {
-	addr := AddressProgramStart + op.U12()
-	slog.Info("CALL", "addr", op.U12())
+	addr := op.NNN()
+	slog.Info("CALL", "addr", op.NNN(), "addr_X", fmt.Sprintf("%X", op.NNN()))
 	returnAddr := vm.ProgramCounter
 	if err := vm.StackPush(returnAddr); err != nil {
 		return err
@@ -468,7 +475,7 @@ func (vm *VM) instr2(op Opcode) error {
 // Skips next instruction if VX equals NN
 func (vm *VM) instr3(op Opcode) error {
 	x := op.U4(1)
-	nn := op.U8(2)
+	nn := op.NN()
 
 	if vm.Register.Read(x) == nn {
 		vm.SkipInstr()
@@ -479,8 +486,8 @@ func (vm *VM) instr3(op Opcode) error {
 
 // Skips next instruction if VX not equals NN
 func (vm *VM) instr4(op Opcode) error {
-	x := op.U4(1)
-	nn := op.U8(2)
+	x := op.X()
+	nn := op.NN()
 
 	if vm.Register.Read(x) != nn {
 		vm.SkipInstr()
@@ -495,8 +502,8 @@ func (vm *VM) instr5(op Opcode) error {
 		return newUndefinedInstructionErr(op)
 	}
 
-	x := op.U4(1)
-	y := op.U4(2)
+	x := op.X()
+	y := op.Y()
 
 	if vm.Register.Read(x) == vm.Register.Read(y) {
 		vm.SkipInstr()
@@ -507,8 +514,8 @@ func (vm *VM) instr5(op Opcode) error {
 
 // Sets VX to NN
 func (vm *VM) instr6(op Opcode) error {
-	x := op.U4(1)
-	nn := op.U8(2)
+	x := op.X()
+	nn := op.NN()
 
 	vm.Register.Write(x, nn)
 
@@ -517,8 +524,8 @@ func (vm *VM) instr6(op Opcode) error {
 
 // Adds NN to VX
 func (vm *VM) instr7(op Opcode) error {
-	x := op.U4(1)
-	nn := op.U8(2)
+	x := op.X()
+	nn := op.NN()
 
 	result := vm.Register.Read(x)
 	result += nn
@@ -529,8 +536,8 @@ func (vm *VM) instr7(op Opcode) error {
 
 // Register ops
 func (vm *VM) instr8(op Opcode) error {
-	x := op.U4(1)
-	y := op.U4(2)
+	x := op.X()
+	y := op.Y()
 	cmd := op.U4(3)
 
 	valueX := vm.Register.Read(x)
@@ -597,8 +604,8 @@ func (vm *VM) instr8(op Opcode) error {
 
 // Skips next instruction if VX not equals VY
 func (vm *VM) instr9(op Opcode) error {
-	x := op.U4(1)
-	y := op.U4(2)
+	x := op.X()
+	y := op.Y()
 	z := op.U4(3)
 
 	if z != 0 {
@@ -617,14 +624,14 @@ func (vm *VM) instr9(op Opcode) error {
 
 // Sets I to address NNN
 func (vm *VM) instrA(op Opcode) error {
-	addr := op.U12()
+	addr := op.NNN()
 	vm.IndexAddress = addr
 	return nil
 }
 
 // Jumps to address NNN + V0
 func (vm *VM) instrB(op Opcode) error {
-	addr := AddressProgramStart + op.U12()
+	addr := op.NNN()
 	v0 := vm.Register.Read(0)
 	vm.Jump(uint16(addr) + uint16(v0))
 	return nil
@@ -632,8 +639,8 @@ func (vm *VM) instrB(op Opcode) error {
 
 // Sets VX to result of bitwise on rand number and NN
 func (vm *VM) instrC(op Opcode) error {
-	x := op.U4(1)
-	nn := op.U8(2)
+	x := op.X()
+	nn := op.NN()
 	result := vm.rand() & nn
 	vm.Register.Write(x, result)
 	return nil
@@ -642,13 +649,13 @@ func (vm *VM) instrC(op Opcode) error {
 // Draws a sprite at coordinate VX, VY with 8px width
 // and height of N. If VF is 1, bits will be XORed.
 func (vm *VM) instrD(op Opcode) error {
-	x := op.U4(1)
-	y := op.U4(2)
-	n := op.U4(3)
+	x := op.X()
+	y := op.Y()
+	n := op.N()
 	spriteX := vm.Register.Read(x)
 	spriteY := vm.Register.Read(y)
 
-	spriteMemLoc := AddressSpritesStart + vm.IndexAddress
+	spriteMemLoc := vm.IndexAddress
 	slog.Info("DRAW", "I", spriteMemLoc, "X", x, "Y", y, "N", n)
 	for range n {
 		for i := range 8 {
@@ -658,13 +665,13 @@ func (vm *VM) instrD(op Opcode) error {
 			}
 			spriteU8 := vm.Memory[loc]
 
-			idx, _ := vm.FrameBuffer.getIndexes(spriteX, spriteY)
+			idx, _ := vm.FrameBuffer.getIndexes(spriteX, spriteY+uint8(n))
 
 			// Check if bits should be XORed
 			if vm.Register.Read(VF) == 1 {
-				vm.FrameBuffer[idx] ^= spriteU8
+				vm.FrameBuffer[int(idx)+i] ^= spriteU8
 			} else {
-				vm.FrameBuffer[idx] = spriteU8
+				vm.FrameBuffer[int(idx)+i] = spriteU8
 			}
 		}
 	}
@@ -673,8 +680,8 @@ func (vm *VM) instrD(op Opcode) error {
 }
 
 func (vm *VM) instrE(op Opcode) error {
-	x := op.U4(1)
-	cmd := op.U8(2)
+	x := op.X()
+	cmd := op.NN()
 	valueX := vm.Register.Read(x)
 
 	slog.Info("KEY", "X", valueX, "CMD", cmd)
@@ -696,8 +703,8 @@ func (vm *VM) instrE(op Opcode) error {
 }
 
 func (vm *VM) instrF(op Opcode) error {
-	x := op.U4(1)
-	cmd := op.U8(2)
+	x := op.X()
+	cmd := op.NN()
 	switch cmd {
 	case 0x07:
 		// Sets VX to value of delay timer

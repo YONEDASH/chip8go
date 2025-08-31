@@ -45,7 +45,7 @@ func main() {
 		panic(err)
 	}
 
-	if true {
+	if false {
 		if err := vm.Start(context.Background()); err != nil {
 			panic(err)
 		}

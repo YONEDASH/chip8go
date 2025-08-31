@@ -78,5 +78,5 @@ func TestOpcodeHelpers(t *testing.T) {
 	assert.EqualValues(t, uint8(0xAB), a.U8(0))
 	assert.EqualValues(t, uint8(0xBC), a.U8(1))
 	assert.EqualValues(t, uint8(0xCD), a.U8(2))
-	assert.EqualValues(t, 0xBCD, a.U12())
+	assert.EqualValues(t, 0xBCD, a.NNN())
 }
