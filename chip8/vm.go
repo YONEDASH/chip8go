@@ -648,6 +648,10 @@ func (vm *VM) instrC(op Opcode) error {
 
 // Draws a sprite at coordinate VX, VY with 8px width
 // and height of N. If VF is 1, bits will be XORed.
+// Draws a sprite at coordinate VX, VY with 8px width
+// and height of N. Each sprite is 8px wide and N pixels tall.
+// Each row of 8 pixels is read as bit-coded starting from memory location I.
+// VF is set to 1 if any pixels are flipped from set to unset, and 0 otherwise.
 func (vm *VM) instrD(op Opcode) error {
 	x := op.X()
 	y := op.Y()
@@ -656,22 +660,27 @@ func (vm *VM) instrD(op Opcode) error {
 	spriteY := vm.Register.Read(y)
 
 	spriteMemLoc := vm.IndexAddress
-	slog.Info("DRAW", "I", spriteMemLoc, "X", x, "Y", y, "N", n)
-	for range n {
-		for i := range 8 {
-			loc := int(spriteMemLoc+uint16(n)) + i
-			if loc >= 4096 {
-				return newIllegalMemoryAccessErr(fmt.Sprintf("location %d is out of range", loc))
-			}
-			spriteU8 := vm.Memory[loc]
+	slog.Info("DRAW", "I", spriteMemLoc, "X", spriteX, "Y", spriteY, "N", n)
 
-			idx, _ := vm.FrameBuffer.getIndexes(spriteX, spriteY+uint8(n))
+	// Reset collision flag
+	vm.Register.Write(VF, 0)
 
-			// Check if bits should be XORed
-			if vm.Register.Read(VF) == 1 {
-				vm.FrameBuffer[int(idx)+i] ^= spriteU8
-			} else {
-				vm.FrameBuffer[int(idx)+i] = spriteU8
+	for row := range n {
+		spriteU8 := vm.Memory[spriteMemLoc+uint12(row)]
+		for col := range uint8(8) {
+			// Extract each bit from the sprite byte (starting from MSB)
+			if (spriteU8 & (0x80 >> col)) != 0 {
+				pixelX := (spriteX + col) % 64
+				pixelY := (spriteY + uint8(row)) % 32
+
+				// If pixel is already set, record collision
+				if vm.FrameBuffer.Read(pixelX, pixelY) == True {
+					vm.Register.Write(VF, 1)
+				}
+
+				// XOR the pixel
+				currentVal := vm.FrameBuffer.Read(pixelX, pixelY)
+				vm.FrameBuffer.Write(pixelX, pixelY, currentVal^True)
 			}
 		}
 	}
