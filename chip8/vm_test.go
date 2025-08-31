@@ -2,6 +2,7 @@ package chip8_test
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,20 +44,39 @@ func TestFrameBuffer(t *testing.T) {
 }
 
 func TestStack(t *testing.T) {
-	vm := New()
+	vm := New(nil, nil)
 
-	for i := range uint16(12) {
+	for i := range uint16(MaxStackSize) {
 		require.NoError(t, vm.StackPush(i), "stack push")
 	}
 	err := vm.StackPush(42)
-	assert.Error(t, err, "stack overflow")
+	require.Error(t, err, "stack overflow")
 
-	for i := range uint16(12) {
+	for i := range uint16(MaxStackSize) {
 		v, err := vm.StackPop()
-		assert.NoError(t, err, "stack pop")
-		assert.Equal(t, v, 11-i, "stack popped value")
+		require.NoError(t, err, "stack pop")
+		require.Equal(t, int(MaxStackSize-1-i), int(v), "stack popped value")
 	}
 
 	_, err = vm.StackPop()
-	assert.Error(t, err, "stack empty")
+	require.Error(t, err, "stack empty")
+
+	// Test big numbers
+	m := uint16(math.MaxUint16)
+	require.NoError(t, vm.StackPush(m), "push big number")
+	v, err := vm.StackPop()
+	require.NoError(t, err, "pop big number")
+	require.Equal(t, m, v, "big number")
+}
+
+func TestOpcodeHelpers(t *testing.T) {
+	a := Opcode(0xABCD)
+	assert.EqualValues(t, 0xA, a.U4(0))
+	assert.EqualValues(t, 0xB, a.U4(1))
+	assert.EqualValues(t, 0xC, a.U4(2))
+	assert.EqualValues(t, 0xD, a.U4(3))
+	assert.EqualValues(t, uint8(0xAB), a.U8(0))
+	assert.EqualValues(t, uint8(0xBC), a.U8(1))
+	assert.EqualValues(t, uint8(0xCD), a.U8(2))
+	assert.EqualValues(t, 0xBCD, a.U12())
 }

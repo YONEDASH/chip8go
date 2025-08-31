@@ -2,7 +2,6 @@ package chip8
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -17,7 +16,7 @@ var (
 )
 
 func newUndefinedInstructionErr(opcode Opcode) error {
-	return errors.Join(ErrUndefinedInstruction, fmt.Errorf("opcode=%x hex=%s", opcode, hex.EncodeToString(opcode.Dump())))
+	return errors.Join(ErrUndefinedInstruction, fmt.Errorf("opcode=%s prefix=%x hex=%s", opcode.String(), opcode.Prefix(), opcode.Hex()))
 }
 
 func newIllegalMemoryAccessErr(msg string) error {
@@ -53,6 +52,9 @@ const (
 	AddressInternalStart = 0x0
 	AddressStackPointer  = AddressInternalStart + 0x0
 	AddressStackStart    = AddressStackPointer + 0x1
+	MaxStackSize         = 16
+	StackAddressBytes    = 2
+	AddressSpritesStart  = AddressStackStart + MaxStackSize*2
 	AddressProgramStart  = 0x200
 )
 
@@ -142,23 +144,74 @@ func (op Opcode) Dump() (d []byte) {
 	return
 }
 
+func (op Opcode) Hex() string {
+	hex := func(b byte) rune {
+		enc := fmt.Sprintf("%X", b)
+		v := enc[0]
+		return rune(v)
+	}
+	d := op.Dump()
+	return fmt.Sprintf("%c%c%c%c", hex(d[0]), hex(d[1]), hex(d[2]), hex(d[3]))
+}
+
 func (op Opcode) Prefix() uint4 {
 	return op.U4(0)
 }
 
-func (op Opcode) U12(n uint16) uint12 {
-	u12 := (op >> (n * 4))
+func (op Opcode) U12() uint12 {
+	u12 := op & 0xFFF
 	return uint12(u12)
 }
 
 func (op Opcode) U8(n uint16) uint8 {
-	u8 := (op >> (n * 4)) & 0xFF
-	return uint8(u8)
+	if n == 2 {
+		return uint8(op & 0xFF)
+	}
+	panic("illegal op")
 }
 
 func (op Opcode) U4(n uint16) uint4 {
-	u4 := (op >> (n * 4)) & 0xF
+	u4 := (op << ((n - 3) * 4)) & 0xF
 	return uint4(u4)
+}
+
+func (op Opcode) String() string {
+	label := "??"
+	switch op.Prefix() {
+	case 0x0:
+		label = "SYS/CLS/RET"
+	case 0x1:
+		label = "JP"
+	case 0x2:
+		label = "CALL"
+	case 0x3:
+		label = "SE"
+	case 0x4:
+		label = "SNE"
+	case 0x5:
+		label = "SE"
+	case 0x6:
+		label = "LD"
+	case 0x7:
+		label = "ADD"
+	case 0x8:
+		label = "LD/OR/AND/XOR/ADD/SUB/SHR/SUBN/SHL"
+	case 0x9:
+		label = "SNE"
+	case 0xA:
+		label = "LD"
+	case 0xB:
+		label = "JP"
+	case 0xC:
+		label = "RND"
+	case 0xD:
+		label = "DRW"
+	case 0xE:
+		label = "SKP/SKNP"
+	case 0xF:
+		label = "LD/ADD"
+	}
+	return fmt.Sprintf("%x %s", op.Prefix(), label)
 }
 
 type VM struct {
@@ -174,16 +227,27 @@ type VM struct {
 }
 
 func New(i InputAdapter, o OutputAdapter) *VM {
-	return &VM{
+	vm := &VM{
 		ProgramCounter: AddressProgramStart,
 		Input:          i,
 		Output:         o,
+	}
+	vm.loadSprites()
+	return vm
+}
+
+func (vm *VM) loadSprites() {
+	for idx, s := range Sprites {
+		begin := AddressSpritesStart + idx
+		for offset, u8 := range s {
+			vm.Memory[begin+offset] = u8
+		}
 	}
 }
 
 // Loads ROM into memory.
 func (vm *VM) Load(r io.Reader) error {
-	buf := make([]uint8, 1)
+	buf := make([]uint8, 2)
 	i := AddressProgramStart
 	for {
 		n, err := r.Read(buf)
@@ -193,17 +257,21 @@ func (vm *VM) Load(r io.Reader) error {
 		if n == 0 {
 			break
 		}
+		if n != 2 {
+			return newIllegalMemoryAccessErr("incomplete instruction")
+		}
 		if i >= 4096 {
 			return newIllegalMemoryAccessErr("memory limit exceeded")
 		}
 		vm.Memory[i] = buf[0]
-		i++
+		vm.Memory[i+1] = buf[1]
+		i += 2
 	}
 	return nil
 }
 
 func (vm *VM) Start(ctx context.Context) error {
-	cpu := time.NewTicker(time.Second / 4) // 700Hz
+	cpu := time.NewTicker(time.Second / 10) // 700Hz
 	defer cpu.Stop()
 	timer := time.NewTicker(time.Second / 1) // 60Hz
 	defer timer.Stop()
@@ -226,16 +294,29 @@ func (vm *VM) Start(ctx context.Context) error {
 	}
 }
 
+func (vm *VM) readInstr(pc uint16) Opcode {
+	return Opcode(vm.Memory[pc])>>8 | Opcode(vm.Memory[pc+1])
+}
+
 // Executes a CPU cycle by executing the instruction pointed at
 // by the program counter.
 func (vm *VM) Cycle() error {
 	pc := vm.ProgramCounter
-	op := Opcode(vm.Memory[pc])
-	slog.Info("CPU", "PC", pc, "prefix", op.Prefix(), "[0]", op.U4(0), "[1]", op.U4(1), "[2]", op.U4(2), "[3]", op.U4(3), "hex", hex.EncodeToString(op.Dump()))
-	if err := vm.Instr(op); err != nil {
-		return err
+	if pc < AddressProgramStart {
+		return newIllegalMemoryAccessErr("tried to access internal memory")
 	}
-	vm.ProgramCounter++
+
+	op := vm.readInstr(pc)
+	if false {
+		slog.Info("CPU", "PC", pc, "PCX", fmt.Sprintf("%X", pc), "OP", op.String(), "[0]", op.U4(0), "[1]", op.U4(1), "[2]", op.U4(2), "[3]", op.U4(3), "hex", op.Hex())
+		if err := vm.Instr(op); err != nil {
+			return err
+		}
+	} else {
+		slog.Info("CPU", "PC", pc, "PCX", fmt.Sprintf("%X", pc), "OP", op.String(), "hex", op.Hex(), "U12", fmt.Sprintf("%X", op.U12()))
+	}
+
+	vm.SkipInstr()
 	return nil
 }
 
@@ -264,13 +345,14 @@ func (vm *VM) SetStackSize(u8 uint8) {
 
 func (vm *VM) StackPush(u12 uint12) error {
 	size := vm.StackSize()
-	if size > 12 {
+	if size >= MaxStackSize {
 		return newIllegalMemoryAccessErr("stack overflow")
 	}
 	top := AddressStackStart + int(size)*2
 	vm.Memory[top+1] = uint8(u12)
 	vm.Memory[top+2] = uint8(u12 >> 8)
 	vm.SetStackSize(size + 1)
+	slog.Info("STACK push", "size", vm.StackSize(), "v", int(u12))
 	return nil
 }
 
@@ -281,13 +363,11 @@ func (vm *VM) StackPop() (uint12, error) {
 	}
 	top := AddressStackStart + int(size)*2
 	v1 := vm.Memory[top-1]
-	v2 := vm.Memory[top]
+	v2 := vm.Memory[top-0]
 	vm.SetStackSize(size - 1)
-	return uint12(v1) | uint12(v2)<<8, nil
-}
-
-func (vm *VM) skipInstr() {
-	vm.ProgramCounter++
+	v := uint12(v1) | uint12(v2)<<8
+	slog.Info("STACK pop", "size", vm.StackSize(), "v", int(v))
+	return v, nil
 }
 
 func (vm *VM) rand() uint8 {
@@ -334,7 +414,7 @@ func (vm *VM) Instr(op Opcode) error {
 }
 
 func (vm *VM) instr0(op Opcode) error {
-	if op.U4(2) == 0xE {
+	if op.U4(1) == 0 && op.U4(2) == 0xE {
 		switch op.U4(3) {
 		case 0x0:
 			// Clear display
@@ -345,31 +425,43 @@ func (vm *VM) instr0(op Opcode) error {
 			if err != nil {
 				return err
 			}
-			vm.ProgramCounter = ptr
+			vm.Jump(ptr)
 		default:
 			return newUndefinedInstructionErr(op)
 		}
 		return nil
 	}
-	u12 := op.U12(1)
-	slog.Info("CALL MACHINE", "u12", u12)
+	u12 := op.U12()
+	slog.Info("CALL MACHINE", "u12", u12, "dump", op.Dump())
 	return nil
+}
+
+func (vm *VM) Jump(addr uint16) {
+	// After this CPU cycle, the PC will be incremented by two.
+	// Therefore addr must be subtracted by two here.
+	vm.ProgramCounter = addr - 2
+}
+
+func (vm *VM) SkipInstr() {
+	vm.ProgramCounter += 2
 }
 
 // Jump to address
 func (vm *VM) instr1(op Opcode) error {
-	addr := op.U12(1)
-	vm.ProgramCounter = addr
+	addr := AddressProgramStart + op.U12()
+	vm.Jump(addr)
 	return nil
 }
 
 // Call subroutine at address
 func (vm *VM) instr2(op Opcode) error {
-	addr := op.U12(1)
-	if err := vm.StackPush(vm.ProgramCounter); err != nil {
+	addr := AddressProgramStart + op.U12()
+	slog.Info("CALL", "addr", op.U12())
+	returnAddr := vm.ProgramCounter
+	if err := vm.StackPush(returnAddr); err != nil {
 		return err
 	}
-	vm.ProgramCounter = addr
+	vm.Jump(addr)
 	return nil
 }
 
@@ -379,7 +471,7 @@ func (vm *VM) instr3(op Opcode) error {
 	nn := op.U8(2)
 
 	if vm.Register.Read(x) == nn {
-		vm.skipInstr()
+		vm.SkipInstr()
 	}
 
 	return nil
@@ -391,7 +483,7 @@ func (vm *VM) instr4(op Opcode) error {
 	nn := op.U8(2)
 
 	if vm.Register.Read(x) != nn {
-		vm.skipInstr()
+		vm.SkipInstr()
 	}
 
 	return nil
@@ -407,7 +499,7 @@ func (vm *VM) instr5(op Opcode) error {
 	y := op.U4(2)
 
 	if vm.Register.Read(x) == vm.Register.Read(y) {
-		vm.skipInstr()
+		vm.SkipInstr()
 	}
 
 	return nil
@@ -441,15 +533,14 @@ func (vm *VM) instr8(op Opcode) error {
 	y := op.U4(2)
 	cmd := op.U4(3)
 
-	valueY := vm.Register.Read(y)
-	if cmd == 0x0 {
-		vm.Register.Write(x, valueY)
-		return nil
-	}
 	valueX := vm.Register.Read(x)
+	valueY := vm.Register.Read(y)
 
 	var value uint8
 	switch cmd {
+	case 0x0:
+		// assign x to value of y
+		vm.Register.Write(x, valueY)
 	case 0x1:
 		// bitwise OR
 		value = valueX | valueY
@@ -518,7 +609,7 @@ func (vm *VM) instr9(op Opcode) error {
 	valueY := vm.Register.Read(y)
 
 	if valueX != valueY {
-		vm.skipInstr()
+		vm.SkipInstr()
 	}
 
 	return nil
@@ -526,16 +617,16 @@ func (vm *VM) instr9(op Opcode) error {
 
 // Sets I to address NNN
 func (vm *VM) instrA(op Opcode) error {
-	addr := op.U12(1)
+	addr := op.U12()
 	vm.IndexAddress = addr
 	return nil
 }
 
 // Jumps to address NNN + V0
 func (vm *VM) instrB(op Opcode) error {
-	addr := op.U12(1)
+	addr := AddressProgramStart + op.U12()
 	v0 := vm.Register.Read(0)
-	vm.ProgramCounter = uint16(addr) + uint16(v0)
+	vm.Jump(uint16(addr) + uint16(v0))
 	return nil
 }
 
@@ -557,21 +648,23 @@ func (vm *VM) instrD(op Opcode) error {
 	spriteX := vm.Register.Read(x)
 	spriteY := vm.Register.Read(y)
 
-	spriteMemLoc := vm.IndexAddress
+	spriteMemLoc := AddressSpritesStart + vm.IndexAddress
+	slog.Info("DRAW", "I", spriteMemLoc, "X", x, "Y", y, "N", n)
 	for range n {
 		for i := range 8 {
 			loc := int(spriteMemLoc+uint16(n)) + i
 			if loc >= 4096 {
 				return newIllegalMemoryAccessErr(fmt.Sprintf("location %d is out of range", loc))
 			}
-			bit := vm.Memory[loc]
+			spriteU8 := vm.Memory[loc]
+
+			idx, _ := vm.FrameBuffer.getIndexes(spriteX, spriteY)
 
 			// Check if bits should be XORed
 			if vm.Register.Read(VF) == 1 {
-				v := vm.FrameBuffer.Read(spriteX, spriteY)
-				vm.FrameBuffer.Write(spriteX, spriteY, v^bit)
+				vm.FrameBuffer[idx] ^= spriteU8
 			} else {
-				vm.FrameBuffer.Write(spriteX, spriteY, bit)
+				vm.FrameBuffer[idx] = spriteU8
 			}
 		}
 	}
@@ -584,14 +677,16 @@ func (vm *VM) instrE(op Opcode) error {
 	cmd := op.U8(2)
 	valueX := vm.Register.Read(x)
 
+	slog.Info("KEY", "X", valueX, "CMD", cmd)
+
 	switch cmd {
 	case 0x9E:
 		if vm.Input.Pressed(valueX) {
-			vm.skipInstr()
+			vm.SkipInstr()
 		}
 	case 0xA1:
 		if !vm.Input.Pressed(valueX) {
-			vm.skipInstr()
+			vm.SkipInstr()
 		}
 	default:
 		return newUndefinedInstructionErr(op)
@@ -602,7 +697,7 @@ func (vm *VM) instrE(op Opcode) error {
 
 func (vm *VM) instrF(op Opcode) error {
 	x := op.U4(1)
-	cmd := op.U8(3)
+	cmd := op.U8(2)
 	switch cmd {
 	case 0x07:
 		// Sets VX to value of delay timer
@@ -621,8 +716,12 @@ func (vm *VM) instrF(op Opcode) error {
 		// Adds VX to I
 		vm.IndexAddress += uint12(vm.Register.Read(x))
 	case 0x29:
-	// Sets I to the location of sprite
-	// TODO
+		// Sets I to the location of sprite
+		idx := vm.Register.Read(x)
+		if idx > 15 {
+			return newIllegalMemoryAccessErr("requested sprite index out of bounds")
+		}
+		vm.IndexAddress = AddressSpritesStart + uint12(idx*5)
 	case 0x33:
 		// Stores the binary-coded decimal representation of VX, with the hundreds
 		// digit in memory at location in I, the tens digit at location I+1, and the
@@ -636,12 +735,12 @@ func (vm *VM) instrF(op Opcode) error {
 		vm.Memory[vm.IndexAddress+2] = ones
 	case 0x55:
 		// Stores from V0 to VX (including VX) in memory. Starts at address I.
-		for i := range uint4(16) {
+		for i := range uint4(x) {
 			vm.Memory[vm.IndexAddress+uint12(i)] = vm.Register.Read(i)
 		}
 	case 0x65:
 		// Loads V0 to VX from memory. Starts at address I.
-		for i := range uint4(16) {
+		for i := range uint4(x) {
 			vm.Register.Write(i, vm.Memory[vm.IndexAddress+uint12(i)])
 		}
 	default:
