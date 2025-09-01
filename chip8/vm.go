@@ -570,53 +570,64 @@ func (vm *VM) instr8(op Opcode) error {
 	case 0x1:
 		// bitwise OR
 		value = valueX | valueY
+		vm.Register.Write(x, value)
+
 	case 0x2:
 		// bitwise AND
 		value = valueX & valueY
+		vm.Register.Write(x, value)
+
 	case 0x3:
 		// XOR
 		value = valueX ^ valueY
+		vm.Register.Write(x, value)
+
 	case 0x4:
 		// Add y to x; sets VF to 1 if overflow, otherwise 0
 		value = valueX + valueY
+		vm.Register.Write(x, value)
+		// recalculate since value may be changed
+		value = vm.Register.Read(x) + vm.Register.Read(y)
 		overflowU8 := uint8(0)
 		if value < valueX || value < valueY {
 			overflowU8 = 1
 		}
 		vm.Register.Write(VF, overflowU8)
+
 	case 0x5:
 		// Subtract y from x; sets to 0 if underflow, otherwise 1
-		value = valueX - valueY
 		underflowU8 := uint8(0)
 		if valueX >= valueY {
 			underflowU8 = 1
 		}
+		vm.Register.Write(x, valueX-valueY)
 		vm.Register.Write(VF, underflowU8)
+
 	case 0x6:
 		// Shifts x to the right by 1, stores least significant
 		// bit of x prior to shift into VF
-		leastSignificantBit := valueX & 1
-		value = valueX >> 1
-		vm.Register.Write(VF, leastSignificantBit)
+		vm.Register.Write(x, valueX>>1)
+		vm.Register.Write(VF, valueX&1)
 	case 0x7:
 		// Subtract x from y; sets VF to 0 if underflow, otherwise 1
-		value = valueY - valueX
 		underflowU8 := uint8(0)
-		if valueX >= valueY {
+		if valueY >= valueX {
 			underflowU8 = 1
 		}
+		vm.Register.Write(x, valueY-valueX)
 		vm.Register.Write(VF, underflowU8)
+
 	case 0xE:
 		// Shifts x to the left by 1, sets VF to 1 if most
 		// significant bit of x was set or 0 if was unset
-		mostSignificantBit := (valueX >> 7) & 1
 		value = valueX << 1
+		mostSignificantBit := (valueX >> 7) & 1
+		vm.Register.Write(x, value)
 		vm.Register.Write(VF, mostSignificantBit)
+
 	default:
 		return newUndefinedInstructionErr(op)
 	}
-
-	vm.Register.Write(x, value)
 
 	return nil
 }
