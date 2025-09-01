@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -48,13 +50,21 @@ func main() {
 		panic(err)
 	}
 
-	rl.InitWindow(900, 450, fmt.Sprintf("CHIP-8: %s", file.Name()))
+	rl.SetConfigFlags(rl.FlagWindowResizable | rl.FlagVsyncHint)
+	rl.InitWindow(800, 450, fmt.Sprintf("CHIP-8: %s", file.Name()))
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(60)
 
-	px := int32(12)
-	w, h := int32(64), int32(32)
-	widthPx, heightPx := w*px, h*px
+	rl.InitAudioDevice()
+	defer rl.CloseAudioDevice()
+
+	if true {
+		for {
+			io.Beep()
+			time.Sleep(1 * time.Second)
+		}
+		return
+	}
 
 	go func() {
 		if err := vm.Start(context.Background(), 1000); err != nil {
@@ -62,14 +72,18 @@ func main() {
 		}
 	}()
 
-	fontSize := int32(24)
 	for !rl.WindowShouldClose() {
+		w, h := int32(64), int32(32)
+		px := int32(rl.GetScreenWidth()) / w
+		widthPx, heightPx := w*px, h*px
+		fontSize := min(int32(max(6, int32(rl.GetScreenHeight())-heightPx)/4), 30)
+
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.Black)
 
 		offsetX, offsetY := (int32(rl.GetScreenWidth())/2 - widthPx/2), (int32(rl.GetScreenHeight())/2 - heightPx/2)
 
-		rl.DrawText(fmt.Sprintf("CPS=%.1f CPU=%.3fms Draw=%.3fms", vm.Metrics.CyclesPerSecond, float64(vm.Metrics.CPUTime.Nanoseconds())/1_000_000, float64(vm.Metrics.DrawTime.Nanoseconds())/1_000_000), offsetX, offsetY-fontSize-2, fontSize, rl.RayWhite)
+		rl.DrawText(fmt.Sprintf("FPS=%d CPS=%.1f CPU=%.3fms Draw=%.3fms", rl.GetFPS(), vm.Metrics.CyclesPerSecond, float64(vm.Metrics.CPUTime.Nanoseconds())/1_000_000, float64(vm.Metrics.DrawTime.Nanoseconds())/1_000_000), offsetX, offsetY-fontSize-2, fontSize, rl.RayWhite)
 
 		pcInfoText := fmt.Sprintf("PC=0x%3X I=0x%3X DT=%2d ST=%2d", vm.ProgramCounter, vm.IndexAddress, vm.DelayTimer, vm.SoundTimer)
 		rl.DrawText(pcInfoText, offsetX, offsetY+heightPx+2, fontSize, rl.RayWhite)
@@ -112,20 +126,65 @@ var ModernKeymap = chip8.Keymap[int32]{
 }
 
 type Window struct {
-	Buffer chip8.FrameBuffer
+	Buffer    chip8.FrameBuffer
+	BeepSound rl.Sound
 }
 
 func NewWindow() (*Window, func(), error) {
-	return &Window{}, func() {}, nil
+	w := &Window{}
+	w.initBeep()
+	return w, w.finish, nil
 }
 
-func (w Window) Next() chip8.Key {
+func (w *Window) finish() {
+	rl.UnloadSound(w.BeepSound)
+}
+
+func (w *Window) initBeep() {
+	const (
+		freq       = 440.0
+		dur        = 0.25
+		sampleRate = 44100
+		channels   = 1
+		sampleSize = 16 // bits per sample
+	)
+
+	sampleCount := int(dur * sampleRate)
+	bufSize := sampleCount * channels * (sampleSize / 8)
+	data := make([]byte, bufSize)
+
+	// fill buffer with signed 16-bit PCM little endian
+	for i := 0; i < sampleCount; i++ {
+		t := float64(i) / float64(sampleRate)
+		s := int16(math.Sin(2*math.Pi*freq*t) * 32767)
+		binary.LittleEndian.PutUint16(data[i*2:], uint16(s))
+	}
+
+	wave := rl.NewWave(
+		uint32(sampleCount),
+		uint32(sampleRate),
+		uint32(sampleSize),
+		uint32(channels),
+		data,
+	)
+
+	w.BeepSound = rl.LoadSoundFromWave(wave)
+	rl.PlaySound(w.BeepSound)
+
+	time.Sleep(time.Second)
+
+	rl.UnloadSound(w.BeepSound)
+
+}
+
+func (w *Window) Next() chip8.Key {
 	ch := make(chan chip8.Key)
 
 	go func() {
 		for {
+			p := rl.GetKeyPressed()
 			for k, v := range ModernKeymap {
-				if rl.IsKeyDown(k) {
+				if p == k || rl.IsKeyDown(k) {
 					ch <- v
 					break
 				}
@@ -137,11 +196,13 @@ func (w Window) Next() chip8.Key {
 	return <-ch
 }
 
-func (w Window) Pressed(k chip8.Key) bool {
-	return rl.IsKeyDown(ModernKeymap.Mapped(k))
+func (w *Window) Pressed(k chip8.Key) bool {
+	m := ModernKeymap.Mapped(k)
+	return rl.IsKeyDown(m) || rl.GetKeyPressed() == m
 }
 
-func (w Window) Beep() {
+func (w *Window) Beep() {
+	rl.PlaySound(w.BeepSound)
 }
 
 func (w *Window) Draw(fb chip8.FrameBuffer) {
