@@ -418,7 +418,7 @@ func (vm *VM) instr0(op Opcode) error {
 			if err != nil {
 				return err
 			}
-			vm.Jump(ptr)
+			vm.Jump(ptr + 2)
 		default:
 			return newUndefinedInstructionErr(op)
 		}
@@ -676,7 +676,7 @@ func (vm *VM) instrD(op Opcode) error {
 			// XOR
 			vm.FrameBuffer.XOR(idx, spriteBit)
 
-			slog.Debug("DXYN: XOR pixel", "idx", idx, "drawX", drawX, "drawY", drawY, "pixelBit", pixel, "spriteBit", spriteBit, "result", vm.FrameBuffer.Read(idx))
+			//slog.Debug("DXYN: XOR pixel", "idx", idx, "drawX", drawX, "drawY", drawY, "pixelBit", pixel, "spriteBit", spriteBit, "result", vm.FrameBuffer.Read(idx))
 
 			drawX++
 			if drawX >= 64 {

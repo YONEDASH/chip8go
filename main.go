@@ -55,7 +55,7 @@ func main() {
 		return
 	}
 
-	rl.InitWindow(900, 450, "chip8")
+	rl.InitWindow(900, 450, fmt.Sprintf("CHIP-8: %s", file.Name()))
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(60)
 
@@ -70,13 +70,18 @@ func main() {
 		}
 	}()
 
+	fontSize := int32(24)
 	for !rl.WindowShouldClose() {
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.Black)
 
 		offsetX, offsetY := (int32(rl.GetScreenWidth())/2 - widthPx/2), (int32(rl.GetScreenHeight())/2 - heightPx/2)
 		// draw file name
-		rl.DrawText(file.Name(), offsetX, offsetY-rl.GetFontDefault().BaseSize-2, rl.GetFontDefault().BaseSize, rl.RayWhite)
+		rl.DrawText(file.Name(), offsetX, offsetY-fontSize-2, fontSize, rl.RayWhite)
+
+		pcInfoText := fmt.Sprintf("PC=0x%3X I=0x%3X DT=%2d ST=%2d", vm.ProgramCounter, vm.IndexAddress, vm.DelayTimer, vm.SoundTimer)
+		infoW := rl.MeasureText(pcInfoText, fontSize)
+		rl.DrawText(pcInfoText, offsetX+widthPx-infoW, offsetY-fontSize-2, fontSize, rl.RayWhite)
 
 		// draw pixels
 		for i := range uint16(64 * 32) {
