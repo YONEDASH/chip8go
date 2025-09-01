@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,6 +14,8 @@ import (
 )
 
 func main() {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+
 	if len(os.Args) != 2 {
 		fmt.Println(os.Args[0], "<rom>")
 		os.Exit(1)
@@ -52,12 +55,12 @@ func main() {
 		return
 	}
 
-	rl.InitWindow(800, 450, "chip8")
+	rl.InitWindow(900, 450, "chip8")
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(60)
 
 	px := int32(12)
-	w, h := int32(48), int32(32)
+	w, h := int32(64), int32(32)
 	widthPx, heightPx := w*px, h*px
 
 	go func() {
@@ -74,16 +77,19 @@ func main() {
 		offsetX, offsetY := (int32(rl.GetScreenWidth())/2 - widthPx/2), (int32(rl.GetScreenHeight())/2 - heightPx/2)
 		// draw file name
 		rl.DrawText(file.Name(), offsetX, offsetY-rl.GetFontDefault().BaseSize-2, rl.GetFontDefault().BaseSize, rl.RayWhite)
+
 		// draw pixels
-		for x := range int32(w) {
-			for y := range int32(h) {
-				if io.Buffer.Read(uint8(x), uint8(y)) == chip8.True {
-					rl.DrawRectangle(offsetX+(x*px), offsetY+(y*px), x+px, y+px, rl.RayWhite)
-				}
+		for i := range uint16(64 * 32) {
+			pixel := io.Buffer.Read(uint16(i))
+			x := int32(i % 64)
+			y := int32(i / 64)
+			if pixel == 0 {
+				continue
 			}
+			rl.DrawRectangle(offsetX+(x*px), offsetY+(y*px), px, px, rl.White)
 		}
 		// screen outline
-		rl.DrawRectangleLines(offsetX, offsetY, 48*px, 32*px, rl.Gray)
+		rl.DrawRectangleLines(offsetX, offsetY, widthPx, heightPx, rl.Gray)
 
 		rl.EndDrawing()
 	}

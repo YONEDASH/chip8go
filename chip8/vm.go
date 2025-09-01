@@ -49,13 +49,12 @@ type uint4 uint8
 type Memory [4096]uint8
 
 const (
-	AddressInternalStart = 0x0
-	AddressStackPointer  = AddressInternalStart + 0x0
-	AddressStackStart    = AddressStackPointer + 0x1
-	MaxStackSize         = 16
-	StackAddressBytes    = 2
-	AddressSpritesStart  = AddressStackStart + MaxStackSize*2
-	AddressProgramStart  = 0x200
+	AddressStackPointer = 0x0
+	AddressStackStart   = AddressStackPointer + 1
+	MaxStackSize        = 16
+	StackAddressBytes   = 2
+	AddressSpritesStart = AddressStackStart + MaxStackSize*2
+	AddressProgramStart = 0x200
 )
 
 func (m *Memory) Write(idx uint12, v uint8) {
@@ -74,13 +73,16 @@ const (
 	VF = uint4(15)
 )
 
-func (r Register) Read(n uint4) uint8 {
+func (r *Register) Read(n uint4) uint8 {
 	return r[int(n)]
 }
 
-func (r Register) Write(n uint4, v uint8) {
+func (r *Register) Write(n uint4, v uint8) {
 	r[int(n)] = v
 }
+
+// Usually 12-bits by spec, but limited by Go to represent it with 16 bits.
+type uint12 = uint16
 
 // The size of the frame buffer is 64x32.
 // Each pixel can ether be on or off.
@@ -88,49 +90,33 @@ func (r Register) Write(n uint4, v uint8) {
 // 2048 bits, or 256 bytes in size
 type FrameBuffer [256]uint8
 
-// Usually 12-bits by spec, but limited by Go to represent it with 16 bits.
-type uint12 = uint16
-
-func (fb *FrameBuffer) getIndexes(x, y uint8) (arrIdx, bitIdx uint8) {
-	idx := x%64 + y*64
-	arrIdx = idx / 8
-	bitIdx = idx % 8
+func (fb *FrameBuffer) indexes(idx uint16) (arrIdx, bitIdx uint8) {
+	arrIdx = uint8(idx / 8)
+	bitIdx = uint8(7 - (idx % 8)) // Reverse bit order: 0→7, 1→6, 2→5, etc.
 	return
 }
 
-func (fb *FrameBuffer) Write(x, y uint8, bit Bool) {
-	arrIdx, bitIdx := fb.getIndexes(x, y)
-	b := fb[arrIdx]
-	b &= ^(1 << bitIdx)
-	b |= ((bit & 1) << bitIdx)
-	fb[arrIdx] = b
+func (fb *FrameBuffer) XOR(idx uint16, spriteBit uint8) {
+	arrIdx, bitIdx := fb.indexes(idx)
+	currentBit := (fb[arrIdx] >> bitIdx) & 1
+	newBit := currentBit ^ spriteBit
+	result := (fb[arrIdx] & ^(1 << bitIdx)) | (newBit << bitIdx)
+	fb[arrIdx] = result
 }
 
-func (fb *FrameBuffer) Read(x, y uint8) Bool {
-	arrIdx, bitIdx := fb.getIndexes(x, y)
+func (fb *FrameBuffer) Read(idx uint16) Bool {
+	arrIdx, bitIdx := fb.indexes(idx)
 	b := fb[arrIdx]
-	return b >> bitIdx & True
+	if (b & (1 << bitIdx)) != 0 {
+		return True
+	}
+	return False
 }
 
 func (fb *FrameBuffer) Clear() {
-	for i := range 256 {
+	for i := range fb {
 		fb[i] = 0
 	}
-}
-
-// Dumps the byte at the target location and
-// the byte to the left and right (if available).
-func (fb *FrameBuffer) Dump(x, y uint8) (d []uint8, arrIdx, bitIdx uint8) {
-	arrIdx, bitIdx = fb.getIndexes(x, y)
-
-	if arrIdx > 0 {
-		d = append(d, fb[arrIdx-1])
-	}
-	d = append(d, fb[arrIdx])
-	if arrIdx < uint8(len(fb)-1) {
-		d = append(d, fb[arrIdx+1])
-	}
-	return
 }
 
 type Opcode uint16
@@ -245,7 +231,7 @@ func New(i InputAdapter, o OutputAdapter) *VM {
 
 func (vm *VM) loadSprites() {
 	for idx, s := range Sprites {
-		begin := AddressSpritesStart + idx
+		begin := AddressSpritesStart + idx*5
 		for offset, u8 := range s {
 			vm.Memory[begin+offset] = u8
 		}
@@ -516,9 +502,9 @@ func (vm *VM) instr5(op Opcode) error {
 func (vm *VM) instr6(op Opcode) error {
 	x := op.X()
 	nn := op.NN()
+	slog.Debug("6XNN: Set X to NN", "X", x, "NN", nn)
 
 	vm.Register.Write(x, nn)
-
 	return nil
 }
 
@@ -527,8 +513,11 @@ func (vm *VM) instr7(op Opcode) error {
 	x := op.X()
 	nn := op.NN()
 
-	result := vm.Register.Read(x)
-	result += nn
+	valueX := vm.Register.Read(x)
+	result := valueX + nn
+
+	slog.Debug("7XNN: Add NN to VX", "X", x, "NN", nn, "valueX", valueX, "result", result)
+
 	vm.Register.Write(x, result)
 
 	return nil
@@ -625,6 +614,7 @@ func (vm *VM) instr9(op Opcode) error {
 // Sets I to address NNN
 func (vm *VM) instrA(op Opcode) error {
 	addr := op.NNN()
+	slog.Debug("ANNN: Set I to NNN", "NNN", addr)
 	vm.IndexAddress = addr
 	return nil
 }
@@ -656,32 +646,47 @@ func (vm *VM) instrD(op Opcode) error {
 	x := op.X()
 	y := op.Y()
 	n := op.N()
-	spriteX := vm.Register.Read(x)
-	spriteY := vm.Register.Read(y)
+	originX := vm.Register.Read(x) % 64
+	originY := vm.Register.Read(y) % 32
 
-	spriteMemLoc := vm.IndexAddress
-	slog.Info("DRAW", "I", spriteMemLoc, "X", spriteX, "Y", spriteY, "N", n)
+	slog.Debug("DXYN: Draw sprite I to X, Y with height N", "I", vm.IndexAddress, "X", x, "Y", y, "N", n, "originX", originX, "originY", originY)
 
 	// Reset collision flag
 	vm.Register.Write(VF, 0)
 
-	for row := range n {
-		spriteU8 := vm.Memory[spriteMemLoc+uint12(row)]
-		for col := range uint8(8) {
-			// Extract each bit from the sprite byte (starting from MSB)
-			if (spriteU8 & (0x80 >> col)) != 0 {
-				pixelX := (spriteX + col) % 64
-				pixelY := (spriteY + uint8(row)) % 32
+	drawX, drawY := uint8(0), originY
+	for i := range uint12(n) {
+		spriteByte := vm.Memory[vm.IndexAddress+i]
+		drawX = originX
 
-				// If pixel is already set, record collision
-				if vm.FrameBuffer.Read(pixelX, pixelY) == True {
-					vm.Register.Write(VF, 1)
-				}
+		for j := 7; j >= 0; j-- {
+			idx := uint16(drawY)*64 + uint16(drawX)
+			pixel := vm.FrameBuffer.Read(idx)
+			spriteBit := spriteByte & (1 << j)
 
-				// XOR the pixel
-				currentVal := vm.FrameBuffer.Read(pixelX, pixelY)
-				vm.FrameBuffer.Write(pixelX, pixelY, currentVal^True)
+			if spriteBit != 0 {
+				spriteBit = 1
 			}
+
+			// On collision, set carry flag to 1
+			if spriteBit != 0 && pixel != 0 {
+				vm.Register.Write(VF, 1)
+			}
+
+			// XOR
+			vm.FrameBuffer.XOR(idx, spriteBit)
+
+			slog.Debug("DXYN: XOR pixel", "idx", idx, "drawX", drawX, "drawY", drawY, "pixelBit", pixel, "spriteBit", spriteBit, "result", vm.FrameBuffer.Read(idx))
+
+			drawX++
+			if drawX >= 64 {
+				break
+			}
+		}
+
+		drawY++
+		if drawY >= 32 {
+			break
 		}
 	}
 
@@ -734,6 +739,7 @@ func (vm *VM) instrF(op Opcode) error {
 	case 0x29:
 		// Sets I to the location of sprite
 		idx := vm.Register.Read(x)
+		fmt.Println("REQUEST SPRITE LOCATION", idx)
 		if idx > 15 {
 			return newIllegalMemoryAccessErr("requested sprite index out of bounds")
 		}
