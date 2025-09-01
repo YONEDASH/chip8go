@@ -58,14 +58,6 @@ func main() {
 	rl.InitAudioDevice()
 	defer rl.CloseAudioDevice()
 
-	if true {
-		for {
-			io.Beep()
-			time.Sleep(1 * time.Second)
-		}
-		return
-	}
-
 	go func() {
 		if err := vm.Start(context.Background(), 1000); err != nil {
 			panic(err)
@@ -126,21 +118,38 @@ var ModernKeymap = chip8.Keymap[int32]{
 }
 
 type Window struct {
-	Buffer    chip8.FrameBuffer
-	BeepSound rl.Sound
+	Buffer chip8.FrameBuffer
 }
 
 func NewWindow() (*Window, func(), error) {
-	w := &Window{}
-	w.initBeep()
-	return w, w.finish, nil
+	return &Window{}, func() {}, nil
 }
 
-func (w *Window) finish() {
-	rl.UnloadSound(w.BeepSound)
+func (w Window) Next() chip8.Key {
+	ch := make(chan chip8.Key)
+
+	go func() {
+		for {
+			p := rl.GetKeyPressed()
+			for k, v := range ModernKeymap {
+				if p == k || rl.IsKeyDown(k) {
+					ch <- v
+					break
+				}
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	return <-ch
 }
 
-func (w *Window) initBeep() {
+func (w Window) Pressed(k chip8.Key) bool {
+	m := ModernKeymap.Mapped(k)
+	return rl.IsKeyDown(m) || rl.GetKeyPressed() == m
+}
+
+func (w Window) Beep() {
 	const (
 		freq       = 440.0
 		dur        = 0.25
@@ -160,6 +169,7 @@ func (w *Window) initBeep() {
 		binary.LittleEndian.PutUint16(data[i*2:], uint16(s))
 	}
 
+	// build wave from Go slice
 	wave := rl.NewWave(
 		uint32(sampleCount),
 		uint32(sampleRate),
@@ -168,41 +178,14 @@ func (w *Window) initBeep() {
 		data,
 	)
 
-	w.BeepSound = rl.LoadSoundFromWave(wave)
-	rl.PlaySound(w.BeepSound)
+	// load and play sound
+	sound := rl.LoadSoundFromWave(wave)
+	rl.PlaySound(sound)
 
-	time.Sleep(time.Second)
+	// wait for playback
+	time.Sleep(time.Duration(float64(time.Second) * dur))
 
-	rl.UnloadSound(w.BeepSound)
-
-}
-
-func (w *Window) Next() chip8.Key {
-	ch := make(chan chip8.Key)
-
-	go func() {
-		for {
-			p := rl.GetKeyPressed()
-			for k, v := range ModernKeymap {
-				if p == k || rl.IsKeyDown(k) {
-					ch <- v
-					break
-				}
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}()
-
-	return <-ch
-}
-
-func (w *Window) Pressed(k chip8.Key) bool {
-	m := ModernKeymap.Mapped(k)
-	return rl.IsKeyDown(m) || rl.GetKeyPressed() == m
-}
-
-func (w *Window) Beep() {
-	rl.PlaySound(w.BeepSound)
+	rl.UnloadSound(sound)
 }
 
 func (w *Window) Draw(fb chip8.FrameBuffer) {
