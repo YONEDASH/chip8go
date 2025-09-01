@@ -599,10 +599,10 @@ func (vm *VM) instr8(op Opcode) error {
 		value = valueX >> 1
 		vm.Register.Write(VF, leastSignificantBit)
 	case 0x7:
-		// Subtract x from y; sets to 0 if underflow, otherwise 1
-		value = valueX - valueY
+		// Subtract x from y; sets VF to 0 if underflow, otherwise 1
+		value = valueY - valueX
 		underflowU8 := uint8(0)
-		if valueY >= valueX {
+		if valueX >= valueY {
 			underflowU8 = 1
 		}
 		vm.Register.Write(VF, underflowU8)
@@ -788,12 +788,12 @@ func (vm *VM) instrF(op Opcode) error {
 		vm.Memory[vm.IndexAddress+2] = ones
 	case 0x55:
 		// Stores from V0 to VX (including VX) in memory. Starts at address I.
-		for i := range uint4(x) {
+		for i := range uint4(x + 1) {
 			vm.Memory[vm.IndexAddress+uint12(i)] = vm.Register.Read(i)
 		}
 	case 0x65:
 		// Loads V0 to VX from memory. Starts at address I.
-		for i := range uint4(x) {
+		for i := range uint4(x + 1) {
 			vm.Register.Write(i, vm.Memory[vm.IndexAddress+uint12(i)])
 		}
 	default:
