@@ -48,13 +48,6 @@ func main() {
 		panic(err)
 	}
 
-	if false {
-		if err := vm.Start(context.Background()); err != nil {
-			panic(err)
-		}
-		return
-	}
-
 	rl.InitWindow(900, 450, fmt.Sprintf("CHIP-8: %s", file.Name()))
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(60)
@@ -64,8 +57,7 @@ func main() {
 	widthPx, heightPx := w*px, h*px
 
 	go func() {
-		time.Sleep(time.Second)
-		if err := vm.Start(context.Background()); err != nil {
+		if err := vm.Start(context.Background(), 1000); err != nil {
 			panic(err)
 		}
 	}()
@@ -100,6 +92,25 @@ func main() {
 
 }
 
+var ModernKeymap = chip8.Keymap[int32]{
+	rl.KeyOne:   chip8.Key1,
+	rl.KeyTwo:   chip8.Key2,
+	rl.KeyThree: chip8.Key3,
+	rl.KeyQ:     chip8.Key4,
+	rl.KeyW:     chip8.Key5,
+	rl.KeyE:     chip8.Key6,
+	rl.KeyA:     chip8.Key7,
+	rl.KeyS:     chip8.Key8,
+	rl.KeyD:     chip8.Key9,
+	rl.KeyFour:  chip8.KeyC,
+	rl.KeyR:     chip8.KeyD,
+	rl.KeyF:     chip8.KeyE,
+	rl.KeyV:     chip8.KeyF,
+	rl.KeyY:     chip8.KeyA,
+	rl.KeyX:     chip8.Key0,
+	rl.KeyC:     chip8.KeyB,
+}
+
 type Window struct {
 	Buffer chip8.FrameBuffer
 }
@@ -108,12 +119,26 @@ func NewWindow() (*Window, func(), error) {
 	return &Window{}, func() {}, nil
 }
 
-func (w Window) Next() uint8 {
-	return 0
+func (w Window) Next() chip8.Key {
+	ch := make(chan chip8.Key)
+
+	go func() {
+		for {
+			for k, v := range ModernKeymap {
+				if rl.IsKeyDown(k) {
+					ch <- v
+					break
+				}
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	return <-ch
 }
 
-func (w Window) Pressed(k uint8) bool {
-	return false
+func (w Window) Pressed(k chip8.Key) bool {
+	return rl.IsKeyDown(ModernKeymap.Mapped(k))
 }
 
 func (w Window) Beep() {

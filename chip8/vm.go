@@ -257,23 +257,22 @@ func (vm *VM) Load(r io.Reader) error {
 		if n == 0 {
 			break
 		}
-		if n != 2 {
-			return newIllegalMemoryAccessErr("incomplete instruction")
-		}
 		if i >= 4096 {
 			return newIllegalMemoryAccessErr("memory limit exceeded")
 		}
-		vm.Memory[i] = buf[0]
-		vm.Memory[i+1] = buf[1]
-		i += 2
+
+		for j := range n {
+			vm.Memory[i+j] = buf[j]
+		}
+		i += n
 	}
 	return nil
 }
 
-func (vm *VM) Start(ctx context.Context) error {
-	cpu := time.NewTicker(time.Second / 10) // 700Hz
+func (vm *VM) Start(ctx context.Context, clockRateHz int) error {
+	cpu := time.NewTicker(time.Second / time.Duration(clockRateHz)) // 700Hz
 	defer cpu.Stop()
-	timer := time.NewTicker(time.Second / 1) // 60Hz
+	timer := time.NewTicker(time.Second / 60) // 60Hz
 	defer timer.Stop()
 
 	t := time.Now()
@@ -557,14 +556,17 @@ func (vm *VM) instr8(op Opcode) error {
 	y := op.Y()
 	cmd := op.U4(3)
 
-	valueX := vm.Register.Read(x)
 	valueY := vm.Register.Read(y)
+	if cmd == 0x0 {
+		// assign VX to value of VY
+		vm.Register.Write(x, valueY)
+		return nil
+	}
+
+	valueX := vm.Register.Read(x)
 
 	var value uint8
 	switch cmd {
-	case 0x0:
-		// assign x to value of y
-		vm.Register.Write(x, valueY)
 	case 0x1:
 		// bitwise OR
 		value = valueX | valueY
@@ -649,9 +651,10 @@ func (vm *VM) instrA(op Opcode) error {
 
 // Jumps to address NNN + V0
 func (vm *VM) instrB(op Opcode) error {
-	addr := op.NNN()
-	v0 := vm.Register.Read(0)
-	vm.Jump(uint16(addr) + uint16(v0))
+	v0 := uint12(vm.Register.Read(0))
+	addr := op.NNN() + v0
+	slog.Debug("BNNN: Jump to NNN + V0", "NNN", op.NNN(), "V0", v0)
+	vm.Jump(addr)
 	return nil
 }
 
@@ -724,17 +727,17 @@ func (vm *VM) instrD(op Opcode) error {
 func (vm *VM) instrE(op Opcode) error {
 	x := op.X()
 	cmd := op.NN()
-	valueX := vm.Register.Read(x)
+	key := Key(vm.Register.Read(x))
 
-	slog.Info("KEY", "X", valueX, "CMD", cmd)
+	slog.Info("KEY", "X", key, "CMD", cmd)
 
 	switch cmd {
 	case 0x9E:
-		if vm.Input.Pressed(valueX) {
+		if vm.Input.Pressed(key) {
 			vm.SkipInstr()
 		}
 	case 0xA1:
-		if !vm.Input.Pressed(valueX) {
+		if !vm.Input.Pressed(key) {
 			vm.SkipInstr()
 		}
 	default:
@@ -754,7 +757,7 @@ func (vm *VM) instrF(op Opcode) error {
 	case 0x0A:
 		// Wait for next keyboard input and write it to VX
 		key := vm.Input.Next()
-		vm.Register.Write(x, key)
+		vm.Register.Write(x, uint8(key))
 	case 0x15:
 		// Sets delay timer to VX
 		vm.DelayTimer = vm.Register.Read(x)
