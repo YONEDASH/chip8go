@@ -207,6 +207,12 @@ func (op Opcode) String() string {
 	return fmt.Sprintf("%x %s", op.Prefix(), label)
 }
 
+type Metrics struct {
+	CyclesPerSecond float64
+	CPUTime         time.Duration
+	DrawTime        time.Duration
+}
+
 type VM struct {
 	Memory         Memory
 	Register       Register
@@ -217,6 +223,7 @@ type VM struct {
 	ProgramCounter uint16
 	Input          InputAdapter
 	Output         OutputAdapter
+	Metrics        Metrics
 }
 
 func New(i InputAdapter, o OutputAdapter) *VM {
@@ -269,13 +276,34 @@ func (vm *VM) Start(ctx context.Context) error {
 	timer := time.NewTicker(time.Second / 1) // 60Hz
 	defer timer.Stop()
 
+	t := time.Now()
+	var totalCPU, totalDraw time.Duration
+	var cycles int64
+
 	for {
 		select {
 		case <-cpu.C:
+			start := time.Now()
 			if err := vm.Cycle(); err != nil {
 				return err
 			}
+			totalCPU += time.Since(start)
+			start = time.Now()
 			vm.Output.Draw(vm.FrameBuffer)
+			totalDraw += time.Since(start)
+
+			cycles++
+
+			if s := time.Since(t); s > time.Second {
+				vm.Metrics.CyclesPerSecond = float64(cycles) / s.Seconds()
+				vm.Metrics.CPUTime = totalCPU / time.Duration(cycles)
+				vm.Metrics.DrawTime = totalDraw / time.Duration(cycles)
+
+				cycles = 0
+				totalCPU = 0
+				totalDraw = 0
+				t = time.Now()
+			}
 		case <-timer.C:
 			beep := vm.Tick()
 			if beep {

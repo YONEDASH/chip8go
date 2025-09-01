@@ -76,12 +76,11 @@ func main() {
 		rl.ClearBackground(rl.Black)
 
 		offsetX, offsetY := (int32(rl.GetScreenWidth())/2 - widthPx/2), (int32(rl.GetScreenHeight())/2 - heightPx/2)
-		// draw file name
-		rl.DrawText(file.Name(), offsetX, offsetY-fontSize-2, fontSize, rl.RayWhite)
+
+		rl.DrawText(fmt.Sprintf("CPS=%.1f CPU=%.3fms Draw=%.3fms", vm.Metrics.CyclesPerSecond, float64(vm.Metrics.CPUTime.Nanoseconds())/1_000_000, float64(vm.Metrics.DrawTime.Nanoseconds())/1_000_000), offsetX, offsetY-fontSize-2, fontSize, rl.RayWhite)
 
 		pcInfoText := fmt.Sprintf("PC=0x%3X I=0x%3X DT=%2d ST=%2d", vm.ProgramCounter, vm.IndexAddress, vm.DelayTimer, vm.SoundTimer)
-		infoW := rl.MeasureText(pcInfoText, fontSize)
-		rl.DrawText(pcInfoText, offsetX+widthPx-infoW, offsetY-fontSize-2, fontSize, rl.RayWhite)
+		rl.DrawText(pcInfoText, offsetX, offsetY+heightPx+2, fontSize, rl.RayWhite)
 
 		// draw pixels
 		for i := range uint16(64 * 32) {
