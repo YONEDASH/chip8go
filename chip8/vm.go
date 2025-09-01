@@ -306,7 +306,7 @@ func (vm *VM) Start(ctx context.Context, clockRateHz int) error {
 		case <-timer.C:
 			beep := vm.Tick()
 			if beep {
-				vm.Output.Beep()
+				vm.Output.Beep(float64(vm.SoundTimer) / 60)
 			}
 		case <-ctx.Done():
 			return nil

@@ -42,6 +42,6 @@ type InputAdapter interface {
 }
 
 type OutputAdapter interface {
-	Beep()
+	Beep(seconds float64)
 	Draw(fb FrameBuffer)
 }

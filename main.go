@@ -112,20 +112,21 @@ var ModernKeymap = chip8.Keymap[int32]{
 	rl.KeyR:     chip8.KeyD,
 	rl.KeyF:     chip8.KeyE,
 	rl.KeyV:     chip8.KeyF,
-	rl.KeyY:     chip8.KeyA,
+	rl.KeyZ:     chip8.KeyA,
 	rl.KeyX:     chip8.Key0,
 	rl.KeyC:     chip8.KeyB,
 }
 
 type Window struct {
-	Buffer chip8.FrameBuffer
+	Buffer  chip8.FrameBuffer
+	beeping bool
 }
 
 func NewWindow() (*Window, func(), error) {
 	return &Window{}, func() {}, nil
 }
 
-func (w Window) Next() chip8.Key {
+func (w *Window) Next() chip8.Key {
 	ch := make(chan chip8.Key)
 
 	go func() {
@@ -144,26 +145,35 @@ func (w Window) Next() chip8.Key {
 	return <-ch
 }
 
-func (w Window) Pressed(k chip8.Key) bool {
+func (w *Window) Pressed(k chip8.Key) bool {
 	m := ModernKeymap.Mapped(k)
 	return rl.IsKeyDown(m) || rl.GetKeyPressed() == m
 }
 
-func (w Window) Beep() {
+func (w *Window) Beep(seconds float64) {
+	go w.beep(seconds)
+}
+
+func (w *Window) beep(seconds float64) {
+	if w.beeping || seconds <= 0 {
+		return
+	}
+	w.beeping = true
+
 	const (
 		freq       = 440.0
-		dur        = 0.25
 		sampleRate = 44100
 		channels   = 1
 		sampleSize = 16 // bits per sample
 	)
+	dur := float64(seconds)
 
 	sampleCount := int(dur * sampleRate)
 	bufSize := sampleCount * channels * (sampleSize / 8)
 	data := make([]byte, bufSize)
 
 	// fill buffer with signed 16-bit PCM little endian
-	for i := 0; i < sampleCount; i++ {
+	for i := range sampleCount {
 		t := float64(i) / float64(sampleRate)
 		s := int16(math.Sin(2*math.Pi*freq*t) * 32767)
 		binary.LittleEndian.PutUint16(data[i*2:], uint16(s))
@@ -183,9 +193,10 @@ func (w Window) Beep() {
 	rl.PlaySound(sound)
 
 	// wait for playback
-	time.Sleep(time.Duration(float64(time.Second) * dur))
+	time.Sleep(time.Duration(float64(time.Second)*dur) + 100*time.Millisecond)
 
 	rl.UnloadSound(sound)
+	w.beeping = false
 }
 
 func (w *Window) Draw(fb chip8.FrameBuffer) {
