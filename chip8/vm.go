@@ -257,7 +257,7 @@ func (vm *VM) Load(r io.Reader) error {
 		if n == 0 {
 			break
 		}
-		if i >= 4096 {
+		if i >= len(vm.Memory) {
 			return newIllegalMemoryAccessErr("memory limit exceeded")
 		}
 
@@ -768,7 +768,11 @@ func (vm *VM) instrF(op Opcode) error {
 	case 0x0A:
 		// Wait for next keyboard input and write it to VX
 		key := vm.Input.Next()
-		vm.Register.Write(x, uint8(key))
+		if key == KeyInvalid {
+			vm.ProgramCounter -= 2
+		} else {
+			vm.Register.Write(x, uint8(key))
+		}
 	case 0x15:
 		// Sets delay timer to VX
 		vm.DelayTimer = vm.Register.Read(x)

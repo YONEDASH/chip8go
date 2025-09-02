@@ -19,6 +19,7 @@ const (
 	KeyD
 	KeyE
 	KeyF
+	KeyInvalid
 )
 
 type Number interface{ int | int32 | int64 }
